@@ -1,5 +1,7 @@
 import asyncio
 import random
+from field import GF
+from polynomial import polynomialsOver
 
 """
 Ideal functionality for Asynchronous Verifiable Secret Sharing (AVSS or SecretShare)
@@ -11,10 +13,15 @@ The functionality definition for AVSS is very simple:
 This module also defines an Ideal Protocol. The Ideal Protocol matches the interface of AVSS protocol construction, meaning that there is an instance created for each party. However, the instances of Ideal Protocol (with the same `sid`) all share a singleton Functionality.
 """
 
+# Fix the field for now
+Field = GF(0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001)
+Poly = polynomialsOver(Field)
+
 class SecretShare_Functionality(object):
-    def __init__(self, sid, N, inputFromDealer=None):
+    def __init__(self, sid, N, f, inputFromDealer=None):
         self.sid = sid
         self.N = N
+        self.f = f
         if inputFromDealer is None: inputFromDealer = asyncio.Future()
         self.inputFromDealer = inputFromDealer
         self.outputs = [asyncio.Future() for _ in range(N)]
@@ -24,10 +31,16 @@ class SecretShare_Functionality(object):
 
     async def _run(self):
         v = await self.inputFromDealer
+        # TODO: allow v to be arbitrary strings, or a parameter?
+        assert type(v) is Field
+        poly = Poly.random(self.f, y0=v)
         for i in range(self.N):
             # TODO: this needs to be made into an "eventually send"
-            # TODO: needs to output a random secret share
-            self.outputs[i].set_result(v)
+            # TODO: the adversary should be able to choose the polynomial,
+            #       as long as it is the correct degree and v0
+            share = poly(i+1)
+            await asyncio.sleep(random.random()*0.5)
+            self.outputs[i].set_result(share)
 
 def SecretShare_IdealProtocol(N, f):
     class SecretShare_IdealProtocol(object):
@@ -39,7 +52,7 @@ def SecretShare_IdealProtocol(N, f):
             # Create the ideal functionality if not already present
             if sid not in SecretShare_IdealProtocol._instances:
                 SecretShare_IdealProtocol._instances[sid] = \
-                SecretShare_Functionality(sid,N,inputFromDealer=asyncio.Future())
+                SecretShare_Functionality(sid,N,f,inputFromDealer=asyncio.Future())
             F_SecretShare = SecretShare_IdealProtocol._instances[sid]
 
             # If dealer, then provide input
@@ -63,13 +76,19 @@ async def test1(sid='sid', N=4, f=1, Dealer=0):
     print(parties[0]._instances[sid])
 
     # Provide input
-    parties[Dealer].inputFromDealer.set_result("hi")
+    v = Field(random.randint(0,Field.modulus-1))
+    print("Dealer's input:", v)
+    parties[Dealer].inputFromDealer.set_result(v)
 
     # Now can await output from each AVSS protocol
     for i in range(N):
         await parties[i].output
         print(i, parties[i].output)
 
+    # Reconstructed
+    rec = Poly.interpolate_at([(i+1,parties[i].output.result()) for i in range(f+1)])
+    print("Reconstruction:", rec)
+        
 if __name__ == '__main__':
     asyncio.set_event_loop(asyncio.new_event_loop())
     loop = asyncio.get_event_loop()
